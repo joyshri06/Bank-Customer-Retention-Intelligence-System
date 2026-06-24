@@ -1,0 +1,139 @@
+import os
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+import joblib
+
+def main():
+    print("--- STEP 1: Loading Dataset ---")
+    data_path = 'Churn_Modelling.csv'
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"Dataset {data_path} not found.")
+    
+    df = pd.read_csv(data_path)
+    print(f"Loaded dataset with shape: {df.shape}")
+    
+    print("\n--- STEP 2: Preprocessing Features ---")
+    # Drop identifiers
+    df_processed = df.drop(columns=['RowNumber', 'CustomerId', 'Surname'])
+    
+    # One-hot encode categorical features: Geography and Gender
+    # Explicitly list categorical columns to ensure consistency
+    df_processed = pd.get_dummies(df_processed, columns=['Geography', 'Gender'], drop_first=True)
+    
+    # Ensure binary columns are integers instead of boolean
+    for col in df_processed.columns:
+        if df_processed[col].dtype == 'bool':
+            df_processed[col] = df_processed[col].astype(int)
+            
+    # Split into features (X) and target (y)
+    X = df_processed.drop(columns=['Exited'])
+    y = df_processed['Exited']
+    feature_names = X.columns.tolist()
+    print(f"Features list ({len(feature_names)}): {feature_names}")
+    print(f"Class distribution: \n{y.value_counts(normalize=True)}")
+    
+    print("\n--- STEP 3: Train/Test Split & Scaling ---")
+    # 80/20 train/test split with standard seed
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.20, random_state=42, stratify=y
+    )
+    print(f"Training set size: {X_train.shape[0]}, Test set size: {X_test.shape[0]}")
+    
+    # Fit StandardScaler
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    
+    print("\n--- STEP 4: Training RandomForest Classifier ---")
+    # Train RandomForest with class weight balancing to address dataset imbalance
+    model = RandomForestClassifier(
+        n_estimators=150,
+        max_depth=12,
+        class_weight='balanced',
+        random_state=42,
+        n_jobs=-1
+    )
+    model.fit(X_train_scaled, y_train)
+    
+    # Simple evaluations
+    y_pred = model.predict(X_test_scaled)
+    print("Test Accuracy:", accuracy_score(y_test, y_pred))
+    print("\nClassification Report:")
+    print(classification_report(y_test, y_pred))
+    
+    print("\n--- STEP 5: Saving Model Artifacts to Disk ---")
+    # Save artifacts for SHAP explainability script
+    joblib.dump(model, 'churn_model.pkl')
+    joblib.dump(scaler, 'scaler.pkl')
+    joblib.dump(feature_names, 'feature_columns.pkl')
+    joblib.dump(X_test, 'X_test.pkl')
+    joblib.dump(y_test, 'y_test.pkl')
+    print("Saved individual pkl files successfully.")
+    
+    print("\n--- STEP 6: Risk Ranking & Threshold Targeting (Top 15%) ---")
+    # Predict probabilities for the test set (class 1 is churn)
+    churn_probs = model.predict_proba(X_test_scaled)[:, 1]
+    
+    # Create a DataFrame of test instances with true target and prediction
+    results_df = X_test.copy()
+    results_df['True_Exited'] = y_test
+    results_df['Churn_Probability'] = churn_probs
+    
+    # Sort by probability descending to rank customers by risk
+    results_df = results_df.sort_values(by='Churn_Probability', ascending=False).reset_index(drop=True)
+    
+    # Total count and targeting count (exactly 15%)
+    n_test = len(results_df)
+    n_target = int(np.round(n_test * 0.15))
+    print(f"Total customers in test set: {n_test}")
+    print(f"Targeting top 15% highest-risk customers: {n_target} customers")
+    
+    # Split into targeted (top 15%) and non-targeted (remaining 85%)
+    targeted_df = results_df.iloc[:n_target]
+    non_targeted_df = results_df.iloc[n_target:]
+    
+    # Calculate performance in targeted group
+    actual_churns_in_targeted = targeted_df['True_Exited'].sum()
+    total_actual_churns_in_test = y_test.sum()
+    precision_top_15 = actual_churns_in_targeted / n_target
+    recall_top_15 = actual_churns_in_targeted / total_actual_churns_in_test
+    
+    print(f"\nTargeting Metrics (Top 15% group):")
+    print(f"- Actual churned customers in targeted group: {actual_churns_in_targeted} out of {n_target}")
+    print(f"- Total actual churns in test set: {total_actual_churns_in_test}")
+    print(f"- Precision (accuracy of targeted list): {precision_top_15:.2%}")
+    print(f"- Recall (proportion of all churners caught): {recall_top_15:.2%}")
+    
+    print("\n--- STEP 7: Business & Financial Impact Evaluation ---")
+    # Financial constants from business_problem.md
+    LTV = 5000  # €5,000 customer lifetime value
+    offer_cost = 150  # €150 retention offer cost
+    
+    total_offer_cost = n_target * offer_cost
+    print(f"Total cost of retention offers: €{total_offer_cost:,.2f} (€{offer_cost} * {n_target})")
+    
+    # Let's simulate business savings under different offer success rates (prob of retaining a churn-bound customer)
+    success_rates = [0.20, 0.50, 0.80]
+    for rate in success_rates:
+        retained_customers = actual_churns_in_targeted * rate
+        gross_ltv_saved = retained_customers * LTV
+        net_savings = gross_ltv_saved - total_offer_cost
+        roi = (net_savings / total_offer_cost) * 100 if total_offer_cost > 0 else 0
+        
+        print(f"\nAssuming {rate:.0%} Retention Success Rate:")
+        print(f"  - Predicted churners successfully retained: {retained_customers:.1f}")
+        print(f"  - Gross Customer LTV saved: €{gross_ltv_saved:,.2f}")
+        print(f"  - Net Financial Savings: €{net_savings:,.2f}")
+        print(f"  - Return on Investment (ROI): {roi:.2f}%")
+        
+    # Calculate breakeven success rate
+    # net_savings = 0 => N_true_pos * rate * LTV = total_offer_cost => rate = total_offer_cost / (N_true_pos * LTV)
+    breakeven_rate = total_offer_cost / (actual_churns_in_targeted * LTV) if actual_churns_in_targeted > 0 else 0
+    print(f"\nBreakeven Success Rate required: {breakeven_rate:.2%}")
+
+if __name__ == '__main__':
+    main()

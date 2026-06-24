@@ -3,8 +3,7 @@
 Predicting and explaining customer churn for a retail bank — built to support
 proactive retention decisions, not just generate a model score.
  
-**[Live ML App →](https://customer-retention-intelligence-0708.streamlit.app/)**
-**[Power BI Dashboard →](link-after-you-publish-to-service)**
+**[Live ML App →](https://bankintelligence.streamlit.app/)**
  
 ## Business Problem
  
